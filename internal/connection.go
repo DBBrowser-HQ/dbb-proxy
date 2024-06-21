@@ -1,17 +1,11 @@
 package internal
 
 import (
-	"bytes"
-	"dbb-proxy/internal/model"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"io"
 	"net"
-	"net/http"
-	"os"
 	"strconv"
 )
 
@@ -24,22 +18,36 @@ func HandleConnection(clientConn net.Conn) error {
 		}
 	}(clientConn)
 
-	accessToken, datasourceId, err := getInitialConnectionData(clientConn)
+	// get StartupMessage params
+	params, err := getInitialConnectionData(clientConn)
 	if err != nil {
 		return errors.New(fmt.Sprintf("Can't get initial connection data: %v", err))
 	}
 
-	connectionInfo, err := getConnectionData(accessToken, datasourceId)
+	datasourceId, err := strconv.Atoi(params["database"])
+	if err != nil {
+		return errors.New(fmt.Sprintf("DatasourceId is not a number: %v", err))
+	}
+
+	// Get connection info from the server
+	connectionInfo, err := getConnectionData(params["user"], datasourceId)
 	if err != nil {
 		return errors.New(fmt.Sprintf("Can't get connection data: %v", err))
 	}
-
-	logrus.Infof("Connection info: %+v", connectionInfo)
 
 	if connectionInfo.Host == "" || connectionInfo.Port == 0 ||
 		connectionInfo.User == "" || connectionInfo.Password == "" ||
 		connectionInfo.Name == "" {
 		return errors.New(fmt.Sprintf("Empty connection info: %+v", connectionInfo))
+	}
+
+	// send new startup message
+	params["user"] = connectionInfo.User
+	params["database"] = connectionInfo.Name
+
+	newStartupMessage, err := createStartUpMessage(params)
+	if err != nil {
+		return errors.New(fmt.Sprintf("Can't create startup message: %v", err))
 	}
 
 	psqlConn, err := net.Dial("tcp", net.JoinHostPort(connectionInfo.Host, strconv.Itoa(connectionInfo.Port)))
@@ -54,98 +62,57 @@ func HandleConnection(clientConn net.Conn) error {
 		}
 	}(psqlConn)
 
-	// from Client to Postgres
+	_, err = psqlConn.Write(newStartupMessage)
+	if err != nil {
+		return errors.New(fmt.Sprintf("Can't send startup message: %v", err))
+	}
+
+	err = handleAuthConnection(clientConn, psqlConn, connectionInfo.User, connectionInfo.Password)
+	if err != nil {
+		return err
+	}
+
 	go func() {
-		_, err := io.Copy(psqlConn, clientConn)
+		err := pipe(psqlConn, clientConn, true)
 		if err != nil {
-			logrus.Errorf("Error copy data from Client to DB: %v", err)
 			return
 		}
 	}()
-
-	// from Postgres to Client
-	if _, err = io.Copy(clientConn, psqlConn); err != nil {
-		logrus.Errorf("Error copy data from DB to Client: %v", err)
+	err = pipe(clientConn, psqlConn, false)
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
-func parseStartupMessage(data []byte) map[string]string {
-	params := make(map[string]string)
-	buffer := bytes.NewBuffer(data)
+func pipe(dst net.Conn, src net.Conn, send bool) error {
+	if send {
+		err := intercept(src, dst)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	_, err := io.Copy(dst, src)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func intercept(src, dst net.Conn) error {
+	buffer := make([]byte, 4096)
 
 	for {
-		key, err := buffer.ReadString(0)
+		n, err := src.Read(buffer)
 		if err != nil {
-			break
+			return errors.New("Can't read from source connection: " + err.Error())
 		}
-		value, err := buffer.ReadString(0)
+
+		_, err = dst.Write(buffer[:n])
 		if err != nil {
-			break
+			return errors.New("Can't write to destination connection: " + err.Error())
 		}
-		key = key[:len(key)-1]
-		value = value[:len(value)-1]
-
-		params[key] = value
 	}
-
-	return params
-}
-
-func getConnectionData(accessToken string, datasourceId int) (model.ConnectionInfo, error) {
-	serverBindAddr := os.Getenv("SERVER_BIND_ADDR")
-	if serverBindAddr == "" {
-		return model.ConnectionInfo{}, errors.New("SERVER_BIND_ADDR env var not set")
-	}
-
-	serverHost := os.Getenv("SERVER_HOST")
-	if serverHost == "" {
-		return model.ConnectionInfo{}, errors.New("SERVER_HOST env var not set")
-	}
-
-	requestUrl := "http://" + net.JoinHostPort(serverHost, serverBindAddr) + "/connect/" + strconv.Itoa(datasourceId)
-	logrus.Infof("Request URL: %s", requestUrl)
-
-	request, err := http.NewRequest(http.MethodGet, requestUrl, nil)
-	if err != nil {
-		return model.ConnectionInfo{}, errors.New("Can't create request: " + err.Error())
-	}
-	request.Header.Add("Authorization", "Bearer "+accessToken)
-
-	var connectionInfo model.ConnectionInfo
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return model.ConnectionInfo{}, errors.New("Can't do request: " + err.Error())
-	}
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return model.ConnectionInfo{}, errors.New("Can't read response body: " + err.Error())
-	}
-	defer response.Body.Close()
-	if err := json.Unmarshal(body, &connectionInfo); err != nil {
-		return model.ConnectionInfo{}, errors.New("Can't unmarshal response body: " + err.Error())
-	}
-	return connectionInfo, nil
-}
-
-func getInitialConnectionData(clientConn net.Conn) (string, int, error) {
-	buf := make([]byte, 1024)
-	n, err := clientConn.Read(buf)
-	if err != nil {
-		return "", 0, errors.New(fmt.Sprintf("Error reading first packet: %v", err))
-	}
-
-	message := buf[4:n]
-	protocolVersion := binary.BigEndian.Uint32(message[:4])
-
-	if protocolVersion != 196608 {
-		return "", 0, errors.New(fmt.Sprintf("Unsupported protocol version: %d", protocolVersion))
-	}
-
-	params := parseStartupMessage(message[4:])
-	datasourceId, err := strconv.Atoi(params["database"])
-	if err != nil {
-		return "", 0, err
-	}
-	return params["user"], datasourceId, nil
 }
