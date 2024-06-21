@@ -44,22 +44,6 @@ func handleAuthConnection(clientConn net.Conn, psqlConn net.Conn, user, password
 			}
 			return nil
 		}
-
-		//else {
-		//	// client-server messaging
-		//	_, err = clientConn.Write(buf[:n])
-		//	if err != nil {
-		//		return errors.New(fmt.Sprintf("Can't send request to the client: %v", err.Error()))
-		//	}
-		//	n, err = clientConn.Read(buf)
-		//	if err != nil && err != io.EOF {
-		//		return errors.New(fmt.Sprintf("Can't read from client: %v", err.Error()))
-		//	}
-		//	_, err = psqlConn.Write(buf[:n])
-		//	if err != nil {
-		//		return errors.New(fmt.Sprintf("Can't send request to the psql: %v", err.Error()))
-		//	}
-		//}
 	}
 }
 

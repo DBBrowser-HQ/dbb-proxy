@@ -67,11 +67,13 @@ func HandleConnection(clientConn net.Conn) error {
 		return errors.New(fmt.Sprintf("Can't send startup message: %v", err))
 	}
 
+	// handle authentication
 	err = handleAuthConnection(clientConn, psqlConn, connectionInfo.User, connectionInfo.Password)
 	if err != nil {
 		return err
 	}
 
+	// messaging between client and server
 	go func() {
 		err := pipe(psqlConn, clientConn, true)
 		if err != nil {
