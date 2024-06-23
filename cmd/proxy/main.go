@@ -34,6 +34,7 @@ func main() {
 			logrus.Errorf("Can't accept connection: %v", err)
 			continue
 		}
+		logrus.Infof("Connection opened with: %v", clientConn.RemoteAddr())
 		go func() {
 			err := internal.HandleConnection(clientConn)
 			if err != nil {
