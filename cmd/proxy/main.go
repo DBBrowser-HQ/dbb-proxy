@@ -38,7 +38,7 @@ func main() {
 		go func() {
 			errConn := internal.HandleConnection(clientConn)
 			if errConn != nil {
-				logrus.Errorf("Can't handle connection: %v", err)
+				logrus.Errorf("Can't handle connection: %v", errConn)
 				return
 			}
 		}()
