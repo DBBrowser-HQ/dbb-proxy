@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sirupsen/logrus"
+	"io"
 	"net"
 )
 
@@ -17,6 +18,13 @@ func handleAuthConnection(clientConn net.Conn, psqlConn net.Conn, user, password
 	for {
 		n, err := psqlConn.Read(buf)
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = GracefulShutdown(clientConn, psqlConn)
+				if err != nil {
+					return err
+				}
+				return nil
+			}
 			return err
 		}
 
@@ -27,11 +35,25 @@ func handleAuthConnection(clientConn net.Conn, psqlConn net.Conn, user, password
 
 			_, err = clientConn.Write(buf[:n])
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = GracefulShutdown(clientConn, psqlConn)
+					if err != nil {
+						return err
+					}
+					return nil
+				}
 				return errors.New(fmt.Sprintf("Can't send request for the password to client: %v", err.Error()))
 			}
 
 			n, err = clientConn.Read(buf)
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = GracefulShutdown(clientConn, psqlConn)
+					if err != nil {
+						return err
+					}
+					return nil
+				}
 				return errors.New(fmt.Sprintf("Can't get the password from client: %v", err.Error()))
 			}
 
@@ -40,6 +62,13 @@ func handleAuthConnection(clientConn net.Conn, psqlConn net.Conn, user, password
 
 			_, err = psqlConn.Write(newPasswordMessage)
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = GracefulShutdown(clientConn, psqlConn)
+					if err != nil {
+						return err
+					}
+					return nil
+				}
 				return errors.New(fmt.Sprintf("Can't send the password to psql: %v", err.Error()))
 			}
 			return nil

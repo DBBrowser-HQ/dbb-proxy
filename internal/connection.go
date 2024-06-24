@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	keepAliveTimeout = 30 * time.Minute
+	KeepAliveTimeout = 30 * time.Minute
 )
 
 func HandleConnection(clientConn net.Conn) error {
@@ -60,7 +60,7 @@ func HandleConnection(clientConn net.Conn) error {
 
 	psqlConn, err := net.Dial("tcp", net.JoinHostPort(connectionInfo.Host, strconv.Itoa(connectionInfo.Port)))
 	if err != nil {
-		return errors.New(fmt.Sprintf("Ошибка при подключении к PostgreSQL серверу: %v\n", err))
+		return errors.New(fmt.Sprintf("Error connecting to PostgreSQL: %v\n", err))
 	}
 	defer func(psqlConn net.Conn) {
 		err := psqlConn.Close()
@@ -70,7 +70,7 @@ func HandleConnection(clientConn net.Conn) error {
 		}
 	}(psqlConn)
 
-	err = setTimeout(psqlConn, clientConn, keepAliveTimeout)
+	err = SetTimeout(psqlConn, clientConn, KeepAliveTimeout)
 	if err != nil {
 		return errors.New(fmt.Sprintf("Can't set initial timeout: %v", err))
 	}
@@ -88,8 +88,8 @@ func HandleConnection(clientConn net.Conn) error {
 
 	// messaging between client and server
 	go func() {
-		err := pipe(psqlConn, clientConn, true)
-		if err != nil {
+		errConn := pipe(psqlConn, clientConn, true)
+		if errConn != nil {
 			logrus.Errorf("From client to psql failed: %v", err)
 			return
 		}
@@ -103,7 +103,7 @@ func HandleConnection(clientConn net.Conn) error {
 	return nil
 }
 
-func setTimeout(client, server net.Conn, timeout time.Duration) error {
+func SetTimeout(client, server net.Conn, timeout time.Duration) error {
 	err := client.SetDeadline(time.Now().Add(timeout))
 	if err != nil {
 		return err
@@ -124,13 +124,13 @@ func pipe(dst net.Conn, src net.Conn, send bool) error {
 	}
 	if err != nil {
 		if errors.Is(err, io.EOF) {
-			err := setTimeout(src, dst, 0)
+			err := GracefulShutdown(dst, src)
 			if err != nil {
-				return errors.New("Can't shutdown connections: " + err.Error())
+				return err
 			}
-			logrus.Info("Gracefully shutting down connections")
 			return nil
-		} else if !errors.Is(err, os.ErrDeadlineExceeded) {
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
 			return errors.New(fmt.Sprintf("Can't copy data from %v to %v: %v", src.RemoteAddr(), dst.RemoteAddr(), err))
 		}
 	}
@@ -151,9 +151,18 @@ func intercept(src, dst net.Conn) error {
 			return err
 		}
 
-		err = setTimeout(src, dst, keepAliveTimeout)
+		err = SetTimeout(src, dst, KeepAliveTimeout)
 		if err != nil {
 			return errors.New("Can't update timeout: " + err.Error())
 		}
 	}
+}
+
+func GracefulShutdown(conn1, conn2 net.Conn) error {
+	err := SetTimeout(conn1, conn2, 0)
+	if err != nil {
+		return errors.New("Can't shutdown connections: " + err.Error())
+	}
+	logrus.Info("Gracefully shutting down connections")
+	return nil
 }
