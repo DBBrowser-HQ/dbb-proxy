@@ -97,7 +97,7 @@ func HandleConnection(clientConn net.Conn) error {
 	}()
 	err = pipe(clientConn, psqlConn, false)
 	if err != nil {
-		logrus.Errorf("From psql to client failed: %v", err)
+		logrus.Error("From psql to client failed: ", err, " ", err.Error())
 		return err
 	}
 	return nil
