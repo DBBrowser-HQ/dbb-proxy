@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -123,7 +124,7 @@ func pipe(dst net.Conn, src net.Conn, send bool) error {
 		_, err = io.Copy(dst, src)
 	}
 	if err != nil {
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) {
 			err := GracefulShutdown(dst, src)
 			if err != nil {
 				return err
